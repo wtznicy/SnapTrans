@@ -1,37 +1,23 @@
 //! Input text normalization for translation preprocessing.
 //!
 //! Cleans and standardizes OCR output and user input before
-//! feeding to the tokenizer and translation model.
+//! feeding to the tokenizer and translation model while preserving
+//! paragraph and line breaks.
 
-/// Normalize input text for translation.
+/// Normalize a single line of text.
 ///
 /// Steps:
-/// 1. Trim leading/trailing whitespace
-/// 2. Replace newlines with spaces (OCR text often has line breaks)
-/// 3. Collapse multiple consecutive spaces into one
-/// 4. Normalize full-width ASCII characters to half-width
-/// 5. Fix common OCR artifacts
-pub fn normalize_text(text: &str) -> String {
-    let text = text.trim();
-    if text.is_empty() {
-        return String::new();
-    }
-
-    let mut result = String::with_capacity(text.len());
-
+/// 1. Converts full-width ASCII variants (U+FF01~U+FF5E) to half-width
+/// 2. Converts full-width spaces (U+3000) to regular spaces
+/// 3. Collapses multiple spaces and tabs into a single space
+/// 4. Trims leading and trailing spaces on the line
+pub fn normalize_line(line: &str) -> String {
+    let mut result = String::with_capacity(line.len());
     let mut prev_space = false;
-    for ch in text.chars() {
+    for ch in line.chars() {
         let ch = normalize_char(ch);
-
         match ch {
-            '\n' | '\r' | '\t' => {
-                // Replace line breaks and tabs with space
-                if !prev_space {
-                    result.push(' ');
-                    prev_space = true;
-                }
-            }
-            ' ' => {
+            ' ' | '\t' => {
                 if !prev_space {
                     result.push(' ');
                     prev_space = true;
@@ -43,8 +29,32 @@ pub fn normalize_text(text: &str) -> String {
             }
         }
     }
-
     result.trim().to_string()
+}
+
+/// Normalize input text for translation.
+///
+/// Standardizes line endings, normalizes each line (preserving newlines),
+/// and trims leading/trailing blank lines.
+pub fn normalize_text(text: &str) -> String {
+    let unified = text.replace("\r\n", "\n").replace('\r', "\n");
+    let trimmed = unified.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let lines: Vec<String> = unified.lines().map(normalize_line).collect();
+
+    let start = match lines.iter().position(|l| !l.is_empty()) {
+        Some(pos) => pos,
+        None => return String::new(),
+    };
+    let end = match lines.iter().rposition(|l| !l.is_empty()) {
+        Some(pos) => pos + 1,
+        None => return String::new(),
+    };
+
+    lines[start..end].join("\n")
 }
 
 /// Normalize a single character.
@@ -73,8 +83,9 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_newlines() {
-        assert_eq!(normalize_text("hello\nworld\nfoo"), "hello world foo");
+    fn test_normalize_newlines_preserved() {
+        assert_eq!(normalize_text("hello\nworld\nfoo"), "hello\nworld\nfoo");
+        assert_eq!(normalize_text("hello\r\nworld\r\nfoo"), "hello\nworld\nfoo");
     }
 
     #[test]
@@ -95,11 +106,9 @@ mod tests {
 
     #[test]
     fn test_normalize_mixed() {
-        let input = "  Hello，World！  This is\n  a test。  ";
+        let input = "  Hello, World!  \n  This is\n  a test.  ";
         let result = normalize_text(input);
-        assert!(!result.contains('\n'));
-        assert!(!result.starts_with(' '));
-        assert!(!result.ends_with(' '));
+        assert_eq!(result, "Hello, World!\nThis is\na test.");
     }
 
     #[test]

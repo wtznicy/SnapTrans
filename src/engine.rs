@@ -77,7 +77,7 @@ impl SnapTransEngine {
 
         // 3. Language detection
         let detected_source = resolve_source_lang(source_lang, &normalized);
-        let target = match target_lang {
+        let mut target = match target_lang {
             "zh" => DetectedLang::Chinese,
             "en" => DetectedLang::English,
             _ => match detected_source {
@@ -86,7 +86,15 @@ impl SnapTransEngine {
             },
         };
 
-        // Skip translation if source == target
+        // If source was auto-detected and matches target, automatically invert target to provide useful translation
+        if source_lang == "auto" && detected_source == target {
+            target = match detected_source {
+                DetectedLang::Chinese => DetectedLang::English,
+                DetectedLang::English => DetectedLang::Chinese,
+            };
+        }
+
+        // If caller explicitly requested same language passthrough, return normalized text
         if detected_source == target {
             return Ok(OfflineTranslateResponse::new(
                 normalized,
@@ -96,9 +104,19 @@ impl SnapTransEngine {
             ));
         }
 
-        // 4-9. Run translation pipeline (under mutex)
-        let translated_text =
-            self.run_pipeline(detected_source, target, &normalized)?;
+        // 4-9. Run translation pipeline line-by-line to preserve paragraphs and line breaks
+        let lines: Vec<&str> = normalized.split('\n').collect();
+        let mut translated_lines = Vec::with_capacity(lines.len());
+        for line in lines {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                translated_lines.push(String::new());
+            } else {
+                let trans_line = self.run_pipeline(detected_source, target, trimmed)?;
+                translated_lines.push(trans_line);
+            }
+        }
+        let translated_text = translated_lines.join("\n");
 
         let latency_ms = total_start.elapsed().as_secs_f64() * 1000.0;
 
